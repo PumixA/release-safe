@@ -1,0 +1,7 @@
+.git
+.gitlab
+node_modules
+coverage
+.env
+*.zip
+.idea/

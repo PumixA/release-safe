@@ -1,0 +1,10 @@
+stages:
+  - test
+  - build
+  - deploy
+
+unit_tests:
+  stage: test
+  image: node:22-alpine
+  script:
+    - npm test
