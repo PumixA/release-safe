@@ -79,7 +79,7 @@ scripts/rollback.sh production      # ou Actions > CI/CD > Run workflow > rollba
 
 ```bash
 scripts/status.sh production                      # version stable active
-cat /var/lib/cargoflow/production/history.log     # ou .state/production/history.log en local
+cat "$CARGOFLOW_STATE_ROOT/production/history.log"   # ou .state/production/history.log en local
 ```
 
 Rédiger le compte rendu dans `docs/incidents/` : symptôme, détection, impact, décision,

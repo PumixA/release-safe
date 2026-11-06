@@ -74,7 +74,7 @@ détenu par l'équipe et ne change pas avec les livraisons.
 ## État des déploiements
 
 L'état (couleur active, version de secours, tags des couleurs, historique) est stocké par les
-scripts dans `.state/<env>/` en local, `/var/lib/cargoflow/<env>/` sur le serveur. Il n'est pas
+scripts dans `.state/<env>/` en local, `$CARGOFLOW_STATE_ROOT/<env>/` sur le serveur (variable de dépôt, `/var/lib/cargoflow` par défaut), hors de l'espace de travail du runner qui est nettoyé à chaque job. Il n'est pas
 versionné : il décrit le serveur, pas le code. Les écritures sont atomiques et un verrou
 `flock` empêche les opérations concurrentes.
 

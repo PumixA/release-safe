@@ -197,7 +197,7 @@ jobs:
       packages: read
     env:
       IMAGE_REPO: ${{ needs.build_image.outputs.image_repo }}
-      CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+      CARGOFLOW_STATE_ROOT: ${{ vars.CARGOFLOW_STATE_ROOT || '/var/lib/cargoflow' }}
     steps:
       - uses: actions/checkout@v5
       - uses: docker/login-action@v3
@@ -227,7 +227,7 @@ jobs:
       packages: read
     env:
       IMAGE_REPO: ${{ needs.build_image.outputs.image_repo }}
-      CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+      CARGOFLOW_STATE_ROOT: ${{ vars.CARGOFLOW_STATE_ROOT || '/var/lib/cargoflow' }}
     steps:
       - uses: actions/checkout@v5
       - uses: docker/login-action@v3
@@ -251,7 +251,7 @@ jobs:
       contents: read
       packages: read
     env:
-      CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+      CARGOFLOW_STATE_ROOT: ${{ vars.CARGOFLOW_STATE_ROOT || '/var/lib/cargoflow' }}
       OPERATION: ${{ inputs.action }}
       TARGET_ENV: ${{ inputs.environment }}
       TARGET_TAG: ${{ inputs.tag }}

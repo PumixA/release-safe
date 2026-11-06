@@ -140,12 +140,17 @@ installés) :
 # Settings > Actions > Runners > New self-hosted runner : suivre les commandes affichées, puis
 ./config.sh --url https://github.com/<owner>/release-safe --token <jeton affiché> \
             --labels cargoflow-deploy --unattended
-sudo ./svc.sh install && sudo ./svc.sh start
+sudo ./svc.sh install && sudo ./svc.sh start              # ou service systemd utilisateur
 sudo install -d -o "$USER" /var/lib/cargoflow            # état des déploiements
 
 # Active les jobs de déploiement dans le pipeline
 gh variable set DEPLOY_RUNNER_READY --body true
+# Optionnel : autre emplacement pour l'état des déploiements (défaut /var/lib/cargoflow)
+gh variable set CARGOFLOW_STATE_ROOT --body "$HOME/.local/share/cargoflow"
 ```
+
+Le fichier `.env` du runner peut définir `DOCKER_CONFIG` vers un dossier dédié : la connexion
+au registry faite par le pipeline n'interfère alors pas avec celle de l'utilisateur de la machine.
 
 Tant que `DEPLOY_RUNNER_READY` n'est pas à `true`, le pipeline s'arrête après `verify` (les
 déploiements sont ignorés, pas en échec).
