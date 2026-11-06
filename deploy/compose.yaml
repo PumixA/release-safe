@@ -1,0 +1,58 @@
+# Environnement CargoFlow (staging ou production) en blue/green.
+#
+# Ce fichier n'est pas lancé à la main : il est piloté par scripts/deploy.sh
+# et scripts/rollback.sh, qui fournissent les variables ci-dessous à partir de
+# deploy/env/<env>.env et de l'état du déploiement (.state/<env>/).
+#
+#   proxy  : Nginx, seul point d'entrée public (PUBLIC_PORT) + port de préversion
+#            local (PREVIEW_PORT) pour vérifier une couleur avant la bascule.
+#   blue   : une version de l'API
+#   green  : l'autre version de l'API
+services:
+  proxy:
+    image: nginx:1.28.3-alpine
+    ports:
+      - "${PUBLIC_PORT:?}:8080"
+      - "127.0.0.1:${PREVIEW_PORT:?}:8081"
+    volumes:
+      - ./nginx:/etc/nginx/conf.d:ro
+      # Fichiers générés par les scripts : couleur active / couleur en préversion.
+      - ${STATE_DIR:?}/nginx:/etc/nginx/cargoflow:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  blue: &api
+    image: ${IMAGE_REPO:?}:${BLUE_TAG:-none}
+    environment:
+      PORT: "3000"
+    labels:
+      cargoflow.color: blue
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  green:
+    <<: *api
+    image: ${IMAGE_REPO:?}:${GREEN_TAG:-none}
+    labels:
+      cargoflow.color: green
