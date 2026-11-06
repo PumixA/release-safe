@@ -1,5 +1,7 @@
 # CargoFlow API — Release Safe
 
+[![CI/CD](https://github.com/PumixA/release-safe/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/PumixA/release-safe/actions/workflows/ci-cd.yml)
+
 API de devis de livraison de CargoFlow et sa chaîne de livraison : tests, image Docker versionnée,
 déploiement **blue/green** derrière **Nginx** en staging et en production, vérification avant
 bascule et **rollback** automatisé.
@@ -16,9 +18,10 @@ Projet DevOps réalisé par **Melvin Delorme** et **Dayana Keo**.
 4. [Pipeline CI/CD](#pipeline-cicd)
 5. [Livrer une version](#livrer-une-version)
 6. [Rollback](#rollback)
-7. [Exploitation](#exploitation)
-8. [Contraintes du projet](#contraintes-du-projet)
-9. [Choix techniques](#choix-techniques)
+7. [Résultats : pipelines, logs et tests](#résultats--pipelines-logs-et-tests)
+8. [Exploitation](#exploitation)
+9. [Contraintes du projet](#contraintes-du-projet)
+10. [Choix techniques](#choix-techniques)
 
 ---
 
@@ -231,6 +234,70 @@ depuis son image : un rollback est un déploiement comme un autre, donc reproduc
 
 Essais de déploiement, de rollback et de pannes : [docs/VALIDATION.md](docs/VALIDATION.md).
 Procédure pour la version défectueuse de vendredi : [docs/RUNBOOK_INCIDENT.md](docs/RUNBOOK_INCIDENT.md).
+
+## Résultats : pipelines, logs et tests
+
+### Pipelines GitHub Actions
+
+Toutes les exécutions du pipeline : les livraisons `v1.0.0` et `v1.2.0`, les rollbacks manuels
+(*Manually run*) et le rejet de la 1.1.0.
+
+![Exécutions du pipeline](docs/captures/gh-actions.png)
+
+**Livraison de la 1.2.0** (tag `v1.2.0`) : tests, shellcheck, validation Compose, gitleaks et
+cohérence de version en parallèle, puis build, smoke test de l'image, staging et production
+(après approbation).
+
+![Pipeline v1.2.0](docs/captures/gh-pipeline-v1.2.0.png)
+
+**Rejet de la 1.1.0** : le job `unit_tests` échoue, rien n'est construit ni déployé.
+
+![Pipeline 1.1.0 rejeté](docs/captures/gh-pipeline-1.1.0-rejet.png)
+
+### Logs
+
+Log du job `unit_tests` sur la 1.1.0 : nos tests de contrat révèlent le barème faux au-delà de
+100 km (120 km : 10,40 € au lieu de 53,60 €).
+
+![Log unit_tests 1.1.0](docs/captures/ci-ut110.png)
+
+Log du job `deploy_production` (v1.2.0) : démarrage sur la couleur inactive, attente de
+`/readyz` (21 s), smoke test via la préversion (devis long de 12 s compris), bascule, smoke test
+public et observation.
+
+![Log deploy_production](docs/captures/ci-deploy.png)
+
+Deuxième barrière : même en forçant une image 1.1.0 jusqu'au déploiement, le smoke test la
+rejette avant la bascule ; la production reste en 1.0.0.
+
+![Rejet 1.1.0 au déploiement](docs/captures/reject-110.png)
+
+Tests de panne : une version qui plante au démarrage est rejetée en 1 s ; une version qui plante
+après la bascule déclenche un rollback automatique.
+
+![Rollback automatique](docs/captures/autorollback.png)
+
+### Résultats de tests
+
+`npm test` sur `main` (1.2.0) : 26/26 (tests fournis + tests de contrat de l'équipe).
+
+![npm test main](docs/captures/tests-main.png)
+
+`npm test` sur la 1.1.0 : 4 échecs, tous sur le barème au-delà de 100 km.
+
+![npm test 1.1.0](docs/captures/tests-110.png)
+
+Trafic client pendant la livraison de la 1.2.0 en production par la CI : **0 erreur sur 686
+requêtes**, et preuve de l'arrêt gracieux (une requête de 12 s survit à l'arrêt du conteneur
+avec `stop_grace_period: 35s`, pas avec 5 s).
+
+![Trafic pendant la livraison](docs/captures/traffic.png)
+
+État de la production après livraison : 1.2.0 active sur green, 1.0.0 en secours sur blue.
+
+![Statut production](docs/captures/status.png)
+
+Détail de tous les essais : [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ## Exploitation
 
