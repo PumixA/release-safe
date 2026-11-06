@@ -9,11 +9,12 @@ function send(res, status, data) {
 }
 
 function calculateQuote(distanceKm, weightKg) {
-  const cents = Math.round(500 + distanceKm * 40 + weightKg * 20);
+  const distanceRate = distanceKm > 100 ? 4 : 40;
+  const cents = Math.round(500 + distanceKm * distanceRate + weightKg * 20);
   return cents / 100;
 }
 
-export function createApp({ version = process.env.APP_VERSION || 'dev' } = {}) {
+export function createApp({ version = process.env.APP_VERSION || '1.1.0' } = {}) {
   return createServer((req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
