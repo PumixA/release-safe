@@ -7,6 +7,7 @@ proxy_set_header X-Forwarded-Proto $scheme;
 
 proxy_connect_timeout 2s;
 proxy_send_timeout 30s;
+# Devis > 100 km : ~12 s depuis la 1.2.0.
 proxy_read_timeout 30s;
 
 # Permet de voir quelle couleur a répondu (démonstration / diagnostic).

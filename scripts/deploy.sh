@@ -81,7 +81,7 @@ if [ -n "$ACTIVE" ]; then
 fi
 
 # 5. Vérification après bascule et observation.
-if "$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$APP_VERSION" && observe "$PUBLIC_URL" "${OBSERVE_SECONDS:-10}"; then
+if "$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$APP_VERSION" && observe "$PUBLIC_URL" "${OBSERVE_SECONDS:-10}" "$TARGET"; then
   history deploy "$VERSION" "$TARGET" OK
   log "=== $VERSION en service sur $DEPLOY_ENV ($TARGET). Version précédente gardée en secours : ${ACTIVE_VERSION:-aucune} (${ACTIVE:-aucune}) ==="
   exit 0

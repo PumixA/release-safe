@@ -57,7 +57,7 @@ other_color() { if [ "$1" = blue ]; then echo green; else echo blue; fi; }
 history() {
   printf '%s | %-10s | %-14s | %-8s | %-5s | %-9s | par %s | commit %s\n' \
     "$(date -Iseconds)" "$DEPLOY_ENV" "$1" "$2" "$3" "$4" \
-    "${GITLAB_USER_LOGIN:-${USER:-?}}" "${CI_COMMIT_SHORT_SHA:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')}" \
+    "${GITHUB_ACTOR:-${GITLAB_USER_LOGIN:-${USER:-?}}}" "${CI_COMMIT_SHORT_SHA:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')}" \
     >> "$STATE_DIR/history.log"
 }
 
@@ -69,10 +69,12 @@ acquire_lock() {
 
 container_id() { compose ps -a -q "$1" 2>/dev/null; }
 
-health_of() { # health_of <service> : healthy | unhealthy | starting | exited | absent
+health_of() { # health_of <service> : healthy | unhealthy | starting | crashloop | exited | absent
   local id
   id="$(container_id "$1")"
   [ -n "$id" ] || { echo absent; return; }
+  # Un conteneur qui a déjà redémarré a planté : inutile d'attendre le timeout.
+  [ "$(docker inspect -f '{{.RestartCount}}' "$id")" -eq 0 ] || { echo crashloop; return; }
   docker inspect -f '{{if eq .State.Status "running"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}{{else}}{{.State.Status}}{{end}}' "$id"
 }
 
@@ -84,7 +86,7 @@ wait_healthy() {
     status="$(health_of "$svc")"
     case "$status" in
       healthy) log "$svc est prête (/readyz = 200) après $(( $(date +%s) - start ))s"; return 0 ;;
-      unhealthy|exited|dead|absent)
+      unhealthy|crashloop|restarting|exited|dead|absent)
         log "$svc en échec (état : $status)"; compose logs --tail 20 "$svc" >&2; return 1 ;;
     esac
     if [ $(( $(date +%s) - start )) -ge "$timeout" ]; then
@@ -127,12 +129,19 @@ ensure_proxy() {
   fi
 }
 
-# observe <url> <secondes> : surveille l'URL publique juste après la bascule.
+# observe <url> <secondes> <service> : surveille l'URL publique et le conteneur
+# juste après la bascule. Un redémarrage du conteneur (crash) est un échec même si
+# Docker l'a relancé assez vite pour que les requêtes HTTP ne le voient pas.
 observe() {
-  local url="$1" seconds="$2" end errors=0 code
+  local url="$1" seconds="$2" svc="$3" end errors=0 code health
   end=$(( $(date +%s) + seconds ))
-  log "Observation du trafic public pendant ${seconds}s..."
+  log "Observation du trafic public et de $svc pendant ${seconds}s..."
   while [ "$(date +%s)" -lt "$end" ]; do
+    health="$(health_of "$svc")"
+    case "$health" in
+      healthy) ;;
+      *) log "  $svc : état $health"; return 1 ;;
+    esac
     for path in /readyz "/api/quote?distanceKm=20&weightKg=3"; do
       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url$path" || true)
       [ "$code" = 200 ] || { errors=$((errors + 1)); log "  $path -> $code"; }
