@@ -8,6 +8,7 @@
 # depuis les fichiers locaux modifiés. Les tests sont lancés avant le build.
 # Tag : <IMAGE_REPO>:<version de package.json> et <IMAGE_REPO>:<sha court>.
 set -euo pipefail
+# shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 
 REF="${1:-HEAD}"

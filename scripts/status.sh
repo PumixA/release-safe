@@ -2,6 +2,7 @@
 # État d'un environnement : couleur active, version de secours, santé, historique.
 # Usage : scripts/status.sh <staging|production>
 set -euo pipefail
+# shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 load_env "${1:?usage: status.sh <staging|production>}"
 

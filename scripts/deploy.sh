@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Déploiement blue/green d'une version de CargoFlow.
 #
-# Usage : scripts/deploy.sh <staging|production> <version>
+# Usage : scripts/deploy.sh <staging|production> <tag_image>
 #   ex.   scripts/deploy.sh production 1.2.0
+#         scripts/deploy.sh staging 3f2a9c1      (sha court, construit par la CI)
 #
 # Étapes :
 #   1. démarre la version sur la couleur inactive (l'autre continue de servir) ;
@@ -14,6 +15,7 @@
 #      -> en cas d'échec : retour automatique à l'ancienne couleur.
 # L'ancienne couleur reste démarrée pour un rollback instantané (scripts/rollback.sh).
 set -euo pipefail
+# shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 
 ENV_NAME="${1:?usage: deploy.sh <staging|production> <version>}"
@@ -30,6 +32,8 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   log "Récupération de $IMAGE..."
   docker pull -q "$IMAGE" >/dev/null || die "image $IMAGE introuvable"
 fi
+APP_VERSION="$(image_version "$VERSION")"
+log "Version applicative attendue : $APP_VERSION"
 
 ensure_proxy
 
@@ -64,7 +68,7 @@ wait_healthy "$TARGET" "$READY_TIMEOUT" || reject "$TARGET n'est jamais devenue 
 # 3. Vérification avant bascule, via la préversion (127.0.0.1 uniquement).
 set_route preview "$TARGET"
 log "Vérification de $TARGET via la préversion $PREVIEW_URL"
-"$SCRIPTS/smoke-test.sh" "$PREVIEW_URL" "$VERSION" || reject "smoke test en échec sur $TARGET"
+"$SCRIPTS/smoke-test.sh" "$PREVIEW_URL" "$APP_VERSION" || reject "smoke test en échec sur $TARGET"
 
 # 4. Bascule.
 log "Bascule du trafic public vers $TARGET ($VERSION)"
@@ -77,7 +81,7 @@ if [ -n "$ACTIVE" ]; then
 fi
 
 # 5. Vérification après bascule et observation.
-if "$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$VERSION" && observe "$PUBLIC_URL" "${OBSERVE_SECONDS:-10}"; then
+if "$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$APP_VERSION" && observe "$PUBLIC_URL" "${OBSERVE_SECONDS:-10}"; then
   history deploy "$VERSION" "$TARGET" OK
   log "=== $VERSION en service sur $DEPLOY_ENV ($TARGET). Version précédente gardée en secours : ${ACTIVE_VERSION:-aucune} (${ACTIVE:-aucune}) ==="
   exit 0
@@ -97,5 +101,5 @@ state_set previous_color "$PREVIOUS_COLOR"
 state_set previous_version "$PREVIOUS_VERSION"
 compose stop "$TARGET" >/dev/null 2>&1 || true
 history deploy "$VERSION" "$TARGET" ROLLBACK
-"$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$ACTIVE_VERSION" || log "ATTENTION : la version restaurée ne passe pas le smoke test"
+"$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$(image_version "$ACTIVE_VERSION")" || log "ATTENTION : la version restaurée ne passe pas le smoke test"
 exit 1

@@ -9,6 +9,7 @@
 #   redéploie la version demandée (ou la précédente) depuis son image, avec
 #   les mêmes contrôles qu'un déploiement normal (scripts/deploy.sh).
 set -euo pipefail
+# shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 
 ENV_NAME="${1:?usage: rollback.sh <staging|production> [version]}"
@@ -32,7 +33,7 @@ if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$ACTIVE" ] \
    && [ "$(health_of "$PREVIOUS")" = healthy ]; then
   acquire_lock
   set_route preview "$PREVIOUS"
-  "$SCRIPTS/smoke-test.sh" "$PREVIEW_URL" "$TARGET_VERSION" \
+  "$SCRIPTS/smoke-test.sh" "$PREVIEW_URL" "$(image_version "$TARGET_VERSION")" \
     || die "la couleur de secours $PREVIOUS ne passe pas le smoke test, rollback annulé (trafic inchangé)"
 
   log "Bascule du trafic public vers $PREVIOUS ($TARGET_VERSION)"
@@ -42,7 +43,7 @@ if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$ACTIVE" ] \
   state_set previous_color "$ACTIVE"
   state_set previous_version "$ACTIVE_VERSION"
 
-  if "$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$TARGET_VERSION"; then
+  if "$SCRIPTS/smoke-test.sh" "$PUBLIC_URL" "$(image_version "$TARGET_VERSION")"; then
     history rollback "$TARGET_VERSION" "$PREVIOUS" OK
     log "=== Rollback terminé : $TARGET_VERSION en service. $ACTIVE_VERSION reste démarrée sur $ACTIVE pour analyse. ==="
     exit 0

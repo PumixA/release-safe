@@ -1,5 +1,7 @@
 # Fonctions communes aux scripts de déploiement (sourcé, pas exécuté).
 # shellcheck shell=bash
+# Variables globales (ROOT, SCRIPTS, *_URL...) utilisées par les scripts appelants.
+# shellcheck disable=SC2034
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS="$ROOT/scripts"
@@ -39,6 +41,14 @@ state_get() { # state_get <clé> [défaut]
 
 state_set() { # state_set <clé> <valeur> (écriture atomique)
   printf '%s' "$2" > "$STATE_DIR/.$1.tmp" && mv -f "$STATE_DIR/.$1.tmp" "$STATE_DIR/$1"
+}
+
+# image_version <tag> : version applicative inscrite dans l'image (label OCI).
+# Permet de déployer par sha (staging) ou par version (production).
+image_version() {
+  local v
+  v="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE_REPO:$1" 2>/dev/null || true)"
+  printf '%s' "${v:-$1}"
 }
 
 other_color() { if [ "$1" = blue ]; then echo green; else echo blue; fi; }
@@ -102,12 +112,14 @@ set_route() {
 
 # ensure_proxy : crée les routes par défaut et démarre Nginx si besoin.
 ensure_proxy() {
+  # $active_color / $preview_color sont des variables Nginx, pas shell.
+  # shellcheck disable=SC2016
   [ -f "$STATE_DIR/nginx/active.conf" ]  || printf 'set $active_color blue;\n'   > "$STATE_DIR/nginx/active.conf"
+  # shellcheck disable=SC2016
   [ -f "$STATE_DIR/nginx/preview.conf" ] || printf 'set $preview_color green;\n' > "$STATE_DIR/nginx/preview.conf"
   if [ "$(health_of proxy)" != healthy ]; then
     compose up -d --no-deps proxy >/dev/null
-    local i
-    for i in $(seq 1 15); do
+    for _ in $(seq 1 15); do
       curl -fsS -o /dev/null "$PUBLIC_URL/nginx-health" 2>/dev/null && return 0
       sleep 1
     done
