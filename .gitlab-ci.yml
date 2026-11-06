@@ -1,10 +1,216 @@
+# Pipeline de livraison CargoFlow
+#
+#   test        tests unitaires + contrat, shellcheck, validation Compose,
+#               détection de secrets, cohérence tag/version
+#   build       image Docker versionnée, publiée dans le registry GitLab
+#   verify      l'image publiée est lancée et passe le smoke test
+#   staging     déploiement blue/green automatique en staging
+#   production  déploiement blue/green MANUEL (tags vX.Y.Z), rollback manuel
+#
+# Aucun secret dans le dépôt : l'accès au registry utilise les variables
+# prédéfinies de GitLab (CI_REGISTRY_USER / CI_REGISTRY_PASSWORD = job token).
+# Les jobs staging/production tournent sur un runner "shell" installé sur la
+# machine de déploiement (tag : cargoflow-deploy).
+
 stages:
   - test
   - build
-  - deploy
+  - verify
+  - staging
+  - production
+
+variables:
+  NODE_IMAGE: node:22.23-alpine3.24
+  DOCKER_IMAGE: docker:29-cli
+  DIND_IMAGE: docker:29-dind
+  # Images : tag sha pour chaque commit, tag version pour chaque release.
+  IMAGE_SHA: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.docker:
+  image: $DOCKER_IMAGE
+  services:
+    - name: $DIND_IMAGE
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+# Uniquement sur main et sur les tags de version.
+.release_rules:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ---------------------------------------------------------------- test
 
 unit_tests:
   stage: test
-  image: node:22-alpine
+  image: $NODE_IMAGE
   script:
-    - npm test
+    - node --test
+      --test-reporter=spec --test-reporter-destination=stdout
+      --test-reporter=junit --test-reporter-destination=junit.xml
+      test/*.test.js
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+
+shellcheck:
+  stage: test
+  image:
+    name: koalaman/shellcheck-alpine:stable
+  script:
+    - shellcheck -x scripts/*.sh
+
+compose_config:
+  stage: test
+  image: $DOCKER_IMAGE
+  script:
+    - for env in staging production; do
+        set -a; . deploy/env/$env.env; set +a;
+        IMAGE_REPO=cargoflow-api STATE_DIR=/tmp/state docker compose -p "$COMPOSE_PROJECT" -f deploy/compose.yaml config -q && echo "$env OK";
+      done
+
+version_check:
+  stage: test
+  image: $NODE_IMAGE
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - VERSION=$(node -p "require('./package.json').version")
+    - test "$CI_COMMIT_TAG" = "v$VERSION" || { echo "Tag $CI_COMMIT_TAG différent de la version package.json ($VERSION)"; exit 1; }
+
+# ---------------------------------------------------------------- build
+
+build_image:
+  stage: build
+  extends: .docker
+  rules: !reference [.release_rules, rules]
+  script:
+    - VERSION=$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json)
+    - docker build --pull
+        --build-arg APP_VERSION="$VERSION"
+        --label org.opencontainers.image.revision="$CI_COMMIT_SHA"
+        --label org.opencontainers.image.source="$CI_PROJECT_URL"
+        -t "$IMAGE_SHA" .
+    - docker push "$IMAGE_SHA"
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        docker tag "$IMAGE_SHA" "$CI_REGISTRY_IMAGE:$VERSION"
+        docker push "$CI_REGISTRY_IMAGE:$VERSION"
+      fi
+
+# ---------------------------------------------------------------- verify
+
+# L'image publiée est démarrée telle quelle et doit passer le smoke test.
+image_smoke_test:
+  stage: verify
+  extends: .docker
+  rules: !reference [.release_rules, rules]
+  needs: [build_image]
+  script:
+    - apk add --no-cache bash curl
+    - docker run -d --name api -p 3000:3000 "$IMAGE_SHA"
+    - |
+      for i in $(seq 1 45); do
+        status=$(docker inspect -f '{{.State.Health.Status}}' api)
+        [ "$status" = healthy ] && break
+        [ "$status" = unhealthy ] && break
+        sleep 2
+      done
+      echo "Santé du conteneur : $status"
+      test "$status" = healthy
+    - EXPECTED=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE_SHA")
+    - scripts/smoke-test.sh http://docker:3000 "$EXPECTED"
+  after_script:
+    - docker logs api || true
+
+# ---------------------------------------------------------------- staging
+
+.deploy:
+  tags: [cargoflow-deploy]
+  variables:
+    IMAGE_REPO: $CI_REGISTRY_IMAGE
+    # État des déploiements conservé hors du répertoire de build du runner.
+    CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # Tag déployé : la version pour une release, le sha pour main.
+    - DEPLOY_TAG=${CI_COMMIT_TAG#v}; DEPLOY_TAG=${DEPLOY_TAG:-$CI_COMMIT_SHORT_SHA}
+
+deploy_staging:
+  stage: staging
+  extends: .deploy
+  rules: !reference [.release_rules, rules]
+  needs: [image_smoke_test]
+  resource_group: staging
+  environment:
+    name: staging
+    url: http://localhost:8081
+  script:
+    - scripts/deploy.sh staging "$DEPLOY_TAG"
+    - scripts/status.sh staging
+
+rollback_staging:
+  stage: staging
+  extends: .deploy
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/ || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  needs: []
+  resource_group: staging
+  environment:
+    name: staging
+    action: access
+  script:
+    - scripts/rollback.sh staging
+    - scripts/status.sh staging
+
+# ---------------------------------------------------------------- production
+
+deploy_production:
+  stage: production
+  extends: .deploy
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+      when: manual
+  needs: [deploy_staging]
+  resource_group: production
+  environment:
+    name: production
+    url: http://localhost:8080
+  script:
+    - scripts/deploy.sh production "$DEPLOY_TAG"
+    - scripts/status.sh production
+
+rollback_production:
+  stage: production
+  extends: .deploy
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+      when: manual
+      allow_failure: true
+  # Disponible à tout moment, indépendamment du résultat du déploiement.
+  needs: []
+  resource_group: production
+  environment:
+    name: production
+    action: access
+  script:
+    - scripts/rollback.sh production
+    - scripts/status.sh production
