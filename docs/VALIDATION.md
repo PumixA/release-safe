@@ -50,3 +50,12 @@ D'où `stop_grace_period: 35s` : le processus s'accorde 30 s et Docker ne doit p
 - `shellcheck -x scripts/*.sh` : aucun avertissement.
 - `docker compose config` valide pour staging et production.
 - Image : utilisateur `node`, code non modifiable par le processus (vérifié : `touch` refusé).
+
+## Livraison par la CI (GitHub Actions, runner auto-hébergé)
+
+| Exécution | Résultat |
+|---|---|
+| Tag `v1.0.0` | tests, gitleaks, build, smoke test de l'image, staging, puis production après approbation : 1.0.0 en service sur blue |
+| Tag `v1.2.0` | même chaîne : 1.2.0 en service sur green, 1.0.0 gardée en secours sur blue |
+| Trafic pendant la livraison 1.2.0 en production | **0 erreur / 686 requêtes** (dont 30 devis longs) |
+| *Run workflow* → `rollback` / `staging`, deux fois | 1.2.0 → 1.0.0 → 1.2.0, succès |
