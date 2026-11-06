@@ -1,5 +1,4 @@
 import { createServer } from 'node:http';
-import { setTimeout as delay } from 'node:timers/promises';
 
 function send(res, status, data) {
   res.writeHead(status, {
@@ -14,26 +13,8 @@ function calculateQuote(distanceKm, weightKg) {
   return cents / 100;
 }
 
-export function createApp({
-  version = process.env.APP_VERSION || '1.2.0',
-  startupDelayMs = 0,
-  longQuoteDelayMs = 0,
-} = {}) {
-  for (const duration of [startupDelayMs, longQuoteDelayMs]) {
-    if (!Number.isInteger(duration) || duration < 0 || duration > 2_147_483_647) {
-      throw new RangeError('Invalid duration');
-    }
-  }
-
-  let catalogReady = startupDelayMs === 0;
-  const initialization = startupDelayMs > 0
-    ? setTimeout(() => {
-      catalogReady = true;
-      console.log('catalog_ready');
-    }, startupDelayMs).unref()
-    : undefined;
-
-  const server = createServer(async (req, res) => {
+export function createApp({ version = process.env.APP_VERSION || 'dev' } = {}) {
+  return createServer((req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
 
@@ -46,9 +27,6 @@ export function createApp({
       }
 
       if (url.pathname === '/readyz') {
-        if (!catalogReady) {
-          return send(res, 503, { status: 'starting' });
-        }
         return send(res, 200, { status: 'ready' });
       }
 
@@ -57,10 +35,6 @@ export function createApp({
       }
 
       if (url.pathname === '/api/quote') {
-        if (!catalogReady) {
-          return send(res, 503, { error: 'catalog_loading' });
-        }
-
         const distanceKm = Number(url.searchParams.get('distanceKm'));
         const weightKg = Number(url.searchParams.get('weightKg'));
         if (
@@ -74,11 +48,6 @@ export function createApp({
           weightKg > 1000
         ) {
           return send(res, 400, { error: 'invalid_parameters' });
-        }
-
-        if (distanceKm > 100 && longQuoteDelayMs > 0) {
-          console.log('quote_started', JSON.stringify({ distanceKm, weightKg, version }));
-          await delay(longQuoteDelayMs);
         }
 
         return send(res, 200, {
@@ -96,7 +65,4 @@ export function createApp({
       return send(res, 500, { error: 'internal_server_error' });
     }
   });
-
-  server.once('close', () => clearTimeout(initialization));
-  return server;
 }
