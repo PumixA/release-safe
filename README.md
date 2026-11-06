@@ -27,9 +27,9 @@ Projet DevOps réalisé par **Melvin Delorme** et **Dayana Keo**.
 ```
                          ┌──────────────────────── hôte de déploiement ────────────────────────┐
                          │                                                                     │
- clients ── :8080 ──────►│  Nginx (proxy)  ── route "active" ──►  blue  : cargoflow-api:1.0.0  │
+ clients ── :8080 ──────►│  Nginx (proxy)  ── route "active" ──►  green : cargoflow-api:1.2.0  │
                          │       │                                                             │
- équipe ── 127.0.0.1:18080 ──►  └─ route "preview" ─────────►  green : cargoflow-api:1.1.0  │
+ équipe ── 127.0.0.1:18080 ──►  └─ route "preview" ─────────►  blue  : cargoflow-api:1.0.0  │
  (préversion, locale)    │                                                                     │
                          └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -72,7 +72,13 @@ scripts/
   rollback.sh               retour arrière
   status.sh                 état d'un environnement
   build.sh                  build local reproductible depuis une référence Git
-docs/                       choix techniques, runbook d'incident, comptes rendus d'incidents
+  traffic.sh                trafic client pendant un déploiement (preuve d'absence de coupure)
+docs/
+  CHOIX_TECHNIQUES.md       justification des choix
+  RUNBOOK_INCIDENT.md       procédure face à une version défectueuse
+  VALIDATION.md             essais réalisés et résultats
+  incidents/                comptes rendus d'incidents
+  notes-de-version/         notes de version fournies (1.1.0, 1.2.0)
 ```
 
 ## Lancer l'API en local
@@ -95,6 +101,16 @@ docker compose down
 
 Barème de référence : 5 € fixes + 0,40 €/km + 0,20 €/kg. Pour 3 kg : 13,60 € sur 20 km,
 45,60 € sur 100 km, 53,60 € sur 120 km.
+
+### Particularités de la 1.2.0
+
+D'après ses [notes de version](docs/notes-de-version/1.2.0.md) :
+
+| Comportement | Réglage de l'infrastructure |
+|---|---|
+| ~20 s d'initialisation, `/readyz` à 503 pendant ce temps | healthcheck sur `/readyz`, `start_period: 40s` ; la bascule attend `/readyz = 200` |
+| devis > 100 km : ~12 s | smoke test : 20 s max pour un devis long ; Nginx `proxy_read_timeout 30s` |
+| arrêt gracieux jusqu'à 30 s | `stop_grace_period: 35s` (10 s par défaut chez Docker) |
 
 ## Pipeline CI/CD
 
@@ -189,6 +205,17 @@ Le rollback instantané revérifie la couleur de secours (smoke test sur la pré
 lui rendre le trafic. Si elle n'est plus disponible, le script redéploie la version précédente
 depuis son image : un rollback est un déploiement comme un autre, donc reproductible.
 
+## Historique des livraisons
+
+| Version | Statut | Détail |
+|---|---|---|
+| 1.0.0 | livrée | version de référence (`v1.0.0`) |
+| 1.1.0 | **refusée** | barème faux au-delà de 100 km — [compte rendu](docs/incidents/2026-11-05-release-1.1.0.md) |
+| 1.2.0 | livrée | après adaptation de l'infrastructure (`v1.2.0`) |
+
+Essais de déploiement, de rollback et de pannes : [docs/VALIDATION.md](docs/VALIDATION.md).
+Procédure pour la version défectueuse de vendredi : [docs/RUNBOOK_INCIDENT.md](docs/RUNBOOK_INCIDENT.md).
+
 ## Exploitation
 
 ```bash
@@ -196,6 +223,7 @@ scripts/status.sh production            # couleurs, versions, santé, dernières
 scripts/smoke-test.sh http://localhost:8080
 docker compose -p cargoflow-production -f deploy/compose.yaml logs -f proxy   # couleur servie par requête
 curl -si http://localhost:8080/api/version | grep -i x-cargoflow-color
+scripts/traffic.sh http://localhost:8080 60                                  # trafic de test, compte les erreurs
 ```
 
 ## Contraintes du projet
