@@ -57,7 +57,7 @@ other_color() { if [ "$1" = blue ]; then echo green; else echo blue; fi; }
 history() {
   printf '%s | %-10s | %-14s | %-8s | %-5s | %-9s | par %s | commit %s\n' \
     "$(date -Iseconds)" "$DEPLOY_ENV" "$1" "$2" "$3" "$4" \
-    "${GITLAB_USER_LOGIN:-${USER:-?}}" "${CI_COMMIT_SHORT_SHA:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')}" \
+    "${GITHUB_ACTOR:-${GITLAB_USER_LOGIN:-${USER:-?}}}" "${CI_COMMIT_SHORT_SHA:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')}" \
     >> "$STATE_DIR/history.log"
 }
 

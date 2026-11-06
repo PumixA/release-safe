@@ -1,0 +1,274 @@
+# Pipeline de livraison CargoFlow (GitHub Actions)
+#
+#   test        tests unitaires + contrat, shellcheck, validation Compose,
+#               détection de secrets, cohérence tag/version
+#   build       image Docker versionnée, publiée sur ghcr.io
+#   verify      l'image publiée est lancée et passe le smoke test
+#   staging     déploiement blue/green automatique (main et tags)
+#   production  déploiement blue/green sur tag vX.Y.Z, après APPROBATION
+#               (règle de protection de l'environnement "production")
+#   rollback    manuel : Actions > CI/CD > Run workflow > action=rollback
+#
+# Aucun secret dans le dépôt : l'accès au registry utilise le GITHUB_TOKEN
+# fourni par GitHub à chaque exécution.
+# Les jobs de déploiement tournent sur un runner auto-hébergé installé sur la
+# machine de déploiement (label : cargoflow-deploy). Ils ne s'exécutent que si
+# la variable de dépôt DEPLOY_RUNNER_READY vaut "true".
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main, "release/**"]
+    tags: ["v*.*.*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Opération"
+        type: choice
+        options: [rollback, deploy]
+        default: rollback
+      environment:
+        description: "Environnement"
+        type: choice
+        options: [staging, production]
+        default: production
+      tag:
+        description: "Tag d'image (vide pour un rollback vers la version de secours)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.23"
+
+jobs:
+  # ------------------------------------------------------------------ test
+  unit_tests:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm test
+
+  shellcheck:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -x scripts/*.sh
+
+  compose_config:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for env in staging production; do
+            set -a
+            # shellcheck disable=SC1090
+            . "deploy/env/$env.env"
+            set +a
+            IMAGE_REPO=cargoflow-api STATE_DIR=/tmp/state \
+              docker compose -p "$COMPOSE_PROJECT" -f deploy/compose.yaml config -q
+            echo "$env OK"
+          done
+
+  secret_detection:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Analyse de tout l'historique Git.
+      - run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 git /repo --redact --verbose
+
+  version_check:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          VERSION=$(node -p "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$VERSION" \
+            || { echo "Tag $GITHUB_REF_NAME différent de la version package.json ($VERSION)"; exit 1; }
+
+  # ------------------------------------------------------------------ build
+  build_image:
+    needs: [unit_tests, shellcheck, compose_config, secret_detection]
+    if: >-
+      always() && !failure() && !cancelled() &&
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_repo: ${{ steps.meta.outputs.image_repo }}
+      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+      deploy_tag: ${{ steps.meta.outputs.deploy_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          SHA_TAG="${GITHUB_SHA::7}"
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = tag ]; then DEPLOY_TAG="$VERSION"; else DEPLOY_TAG="$SHA_TAG"; fi
+          { echo "image_repo=$IMAGE_REPO"; echo "sha_tag=$SHA_TAG"; echo "deploy_tag=$DEPLOY_TAG"; echo "version=$VERSION"; } >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build et publication
+        env:
+          IMAGE_REPO: ${{ steps.meta.outputs.image_repo }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+          DEPLOY_TAG: ${{ steps.meta.outputs.deploy_tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker build --pull \
+            --build-arg APP_VERSION="$VERSION" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -t "$IMAGE_REPO:$SHA_TAG" .
+          docker push "$IMAGE_REPO:$SHA_TAG"
+          if [ "$DEPLOY_TAG" != "$SHA_TAG" ]; then
+            docker tag "$IMAGE_REPO:$SHA_TAG" "$IMAGE_REPO:$DEPLOY_TAG"
+            docker push "$IMAGE_REPO:$DEPLOY_TAG"
+          fi
+
+  # ------------------------------------------------------------------ verify
+  # L'image publiée est démarrée telle quelle et doit passer le smoke test.
+  image_smoke_test:
+    needs: build_image
+    if: always() && needs.build_image.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.build_image.outputs.image_repo }}:${{ needs.build_image.outputs.sha_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Démarrage de l'image
+        run: |
+          docker run -d --name api -p 3000:3000 "$IMAGE"
+          for _ in $(seq 1 45); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' api)
+            [ "$status" = healthy ] || [ "$status" = unhealthy ] && break
+            sleep 2
+          done
+          echo "Santé du conteneur : $status"
+          test "$status" = healthy
+      - name: Smoke test
+        run: |
+          EXPECTED=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE")
+          scripts/smoke-test.sh http://127.0.0.1:3000 "$EXPECTED"
+      - name: Logs
+        if: always()
+        run: docker logs api || true
+
+  # ------------------------------------------------------------------ staging
+  deploy_staging:
+    needs: [build_image, image_smoke_test]
+    if: always() && needs.image_smoke_test.result == 'success' && vars.DEPLOY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, cargoflow-deploy]
+    concurrency: staging
+    environment:
+      name: staging
+      url: http://localhost:8081
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_REPO: ${{ needs.build_image.outputs.image_repo }}
+      CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: scripts/deploy.sh staging "${{ needs.build_image.outputs.deploy_tag }}"
+      - if: always()
+        run: scripts/status.sh staging
+
+  # ------------------------------------------------------------------ production
+  # Sur tag uniquement. L'environnement "production" exige une approbation
+  # manuelle (Settings > Environments > production > Required reviewers).
+  deploy_production:
+    needs: [build_image, deploy_staging]
+    if: >-
+      always() && needs.deploy_staging.result == 'success' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: [self-hosted, cargoflow-deploy]
+    concurrency: production
+    environment:
+      name: production
+      url: http://localhost:8080
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_REPO: ${{ needs.build_image.outputs.image_repo }}
+      CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: scripts/deploy.sh production "${{ needs.build_image.outputs.deploy_tag }}"
+      - if: always()
+        run: scripts/status.sh production
+
+  # ------------------------------------------------------------------ manuel
+  # Actions > CI/CD > Run workflow : rollback (ou redéploiement d'un tag existant).
+  manual_operation:
+    if: github.event_name == 'workflow_dispatch' && vars.DEPLOY_RUNNER_READY == 'true'
+    runs-on: [self-hosted, cargoflow-deploy]
+    concurrency: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CARGOFLOW_STATE_ROOT: /var/lib/cargoflow
+      OPERATION: ${{ inputs.action }}
+      TARGET_ENV: ${{ inputs.environment }}
+      TARGET_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          export IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ "$OPERATION" = deploy ]; then
+            test -n "$TARGET_TAG" || { echo "tag obligatoire pour un déploiement"; exit 1; }
+            scripts/deploy.sh "$TARGET_ENV" "$TARGET_TAG"
+          else
+            scripts/rollback.sh "$TARGET_ENV" ${TARGET_TAG:+"$TARGET_TAG"}
+          fi
+      - if: always()
+        run: scripts/status.sh "$TARGET_ENV"
