@@ -60,7 +60,8 @@ src/, test/                 API (code métier fourni) et tests
   test/contract.test.js     tests de contrat de l'équipe (barème, erreurs HTTP)
 Dockerfile                  image de production (non-root, healthcheck /readyz, version intégrée)
 compose.yaml                lancement local de l'API seule (port 3000)
-.gitlab-ci.yml              pipeline CI/CD
+.github/workflows/ci-cd.yml pipeline CI/CD (GitHub Actions)
+.gitlab-ci.yml              même pipeline pour GitLab CI
 deploy/
   compose.yaml              environnement blue/green (proxy + blue + green)
   nginx/                    configuration du reverse proxy
@@ -114,45 +115,55 @@ D'après ses [notes de version](docs/notes-de-version/1.2.0.md) :
 
 ## Pipeline CI/CD
 
-Fichier : `.gitlab-ci.yml`.
+Fichier : `.github/workflows/ci-cd.yml` (GitHub Actions). Le fichier `.gitlab-ci.yml` décrit le
+même pipeline pour GitLab CI : les scripts sont identiques, seule l'orchestration change.
 
 | Étape | Jobs | Déclenchement |
 |---|---|---|
-| `test` | `unit_tests` (rapport JUnit), `shellcheck`, `compose_config`, `secret_detection`, `version_check` (tags) | chaque push |
-| `build` | `build_image` : image taguée `<sha>` (+ `<version>` sur un tag), poussée dans le registry GitLab | `main` et tags |
-| `verify` | `image_smoke_test` : l'image publiée est démarrée et passe `smoke-test.sh` | `main` et tags |
-| `staging` | `deploy_staging` (auto), `rollback_staging` (manuel) | `main` et tags |
-| `production` | `deploy_production` (**manuel**), `rollback_production` (manuel) | tags `vX.Y.Z` |
+| test | `unit_tests`, `shellcheck`, `compose_config`, `secret_detection` (gitleaks, tout l'historique), `version_check` (tags) | chaque push et pull request |
+| build | `build_image` : image taguée `<sha>` (+ `<version>` sur un tag), publiée sur `ghcr.io` | `main` et tags |
+| verify | `image_smoke_test` : l'image publiée est démarrée et passe `smoke-test.sh` | `main` et tags |
+| staging | `deploy_staging` (automatique) | `main` et tags |
+| production | `deploy_production` : **approbation manuelle obligatoire** (environnement protégé) | tags `vX.Y.Z` |
+| manuel | `manual_operation` : rollback ou redéploiement d'un tag (*Run workflow*) | à la demande |
 
 Le code est testé une fois, l'image est construite une fois, et **cette même image** passe en
 staging puis en production : on livre exactement ce qui a été vérifié.
 
 ### Mise en place du runner de déploiement
 
-Les jobs `staging` et `production` s'exécutent sur la machine de déploiement, via un runner
-GitLab en mode `shell` portant le tag `cargoflow-deploy` :
+Les jobs de déploiement s'exécutent sur la machine de déploiement, via un runner GitHub
+auto-hébergé portant le label `cargoflow-deploy` (Docker, Docker Compose, bash, curl et flock
+installés) :
 
 ```bash
-# Sur la machine de déploiement (Docker, Docker Compose, bash, curl et flock installés)
-sudo gitlab-runner register --executor shell --tag-list cargoflow-deploy
-sudo usermod -aG docker gitlab-runner
-sudo install -d -o gitlab-runner /var/lib/cargoflow      # état des déploiements
+# Settings > Actions > Runners > New self-hosted runner : suivre les commandes affichées, puis
+./config.sh --url https://github.com/<owner>/release-safe --token <jeton affiché> \
+            --labels cargoflow-deploy --unattended
+sudo ./svc.sh install && sudo ./svc.sh start
+sudo install -d -o "$USER" /var/lib/cargoflow            # état des déploiements
+
+# Active les jobs de déploiement dans le pipeline
+gh variable set DEPLOY_RUNNER_READY --body true
 ```
 
-Aucune variable secrète n'est à créer : l'accès au registry utilise les variables prédéfinies
-de GitLab (`CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD`).
+Tant que `DEPLOY_RUNNER_READY` n'est pas à `true`, le pipeline s'arrête après `verify` (les
+déploiements sont ignorés, pas en échec).
+
+Aucun secret n'est à créer : la publication et la récupération des images utilisent le
+`GITHUB_TOKEN` fourni par GitHub à chaque exécution.
 
 ## Livrer une version
 
 ### Processus normal (par la CI)
 
-1. Intégrer la nouvelle version sur une branche (`release/x.y.z`) et ouvrir une merge request.
+1. Intégrer la nouvelle version sur une branche (`release/x.y.z`) et ouvrir une pull request.
    Les tests, shellcheck et la détection de secrets tournent.
 2. Fusionner dans `main` : l'image `<sha>` est construite, vérifiée puis déployée
    **automatiquement en staging**.
-3. Taguer la version (`git tag v1.2.0 && git push --tags`) : la version doit correspondre à
-   `package.json`. L'image `1.2.0` est publiée, déployée en staging, puis le job
-   **`deploy_production` est déclenché manuellement** depuis GitLab.
+3. Taguer la version (`git tag -a v1.2.0 -m "..." && git push origin v1.2.0`) : la version doit
+   correspondre à `package.json`. L'image `1.2.0` est publiée, déployée en staging, puis
+   **`deploy_production` attend l'approbation** d'un relecteur (*Review deployments*).
 
 ### Ce que fait `scripts/deploy.sh <env> <tag>`
 
@@ -193,7 +204,7 @@ scripts/status.sh production
 |---|---|---|
 | Échec avant bascule (pas prête, smoke test KO) | Automatique : la release est rejetée, le trafic n'a jamais quitté l'ancienne version | — |
 | Échec juste après bascule | Automatique : `deploy.sh` rebascule sur l'ancienne couleur | ~1 s |
-| Problème détecté plus tard | `scripts/rollback.sh <env>` ou job `rollback_production` | ~1 s |
+| Problème détecté plus tard | `scripts/rollback.sh <env>` ou *Run workflow* → `rollback` | ~1 s |
 | Revenir à une version précise | `scripts/rollback.sh <env> <version>` : redéploiement complet depuis l'image | ~30 s |
 
 ```bash
@@ -228,10 +239,10 @@ scripts/traffic.sh http://localhost:8080 60                                  # t
 
 ## Contraintes du projet
 
-- **Aucun secret dans Git** : aucun identifiant dans le dépôt, accès registry par les variables
-  prédéfinies GitLab, `.env*` ignorés, job `secret_detection` dans le pipeline.
+- **Aucun secret dans Git** : aucun identifiant dans le dépôt, accès registry par le
+  `GITHUB_TOKEN` éphémère, `.env*` ignorés, job `secret_detection` (gitleaks) sur tout l'historique.
 - **Aucune modification manuelle de la production** : la production n'est modifiée que par
-  `deploy.sh` / `rollback.sh`, lancés par les jobs manuels du pipeline (tag Git → image → job).
+  `deploy.sh` / `rollback.sh`, lancés par le pipeline (tag Git → image → approbation → déploiement).
   L'état est tenu par les scripts, pas édité à la main.
 - **Reproductibilité** : image Node figée, image construite une seule fois depuis un commit,
   identifiée par son sha et sa version, scripts idempotents, rollback = redéploiement d'une

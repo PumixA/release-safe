@@ -54,10 +54,10 @@ le code métier (ex. 1.2.0 : commit `deploy: adaptation aux contraintes d'exploi
 ## 3. Production (manuel, depuis un tag)
 
 ```bash
-git tag vX.Y.Z && git push origin vX.Y.Z
+git tag -a vX.Y.Z -m "CargoFlow X.Y.Z" && git push origin vX.Y.Z
 ```
 
-Dans GitLab : pipeline du tag → job **`deploy_production`** (bouton ▶).
+Dans GitHub : *Actions* → exécution du tag → **Review deployments** → approuver `production`.
 Pour la démonstration, lancer en parallèle le générateur de trafic :
 
 ```bash
@@ -67,7 +67,7 @@ scripts/traffic.sh http://localhost:8080 120
 ## 4. Problème découvert après la livraison
 
 ```bash
-scripts/rollback.sh production      # ou job rollback_production dans GitLab
+scripts/rollback.sh production      # ou Actions > CI/CD > Run workflow > rollback / production
 ```
 
 - La couleur de secours (version précédente, toujours démarrée) est revérifiée puis remise

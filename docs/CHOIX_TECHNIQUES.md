@@ -1,15 +1,23 @@
 # Choix techniques
 
-## GitLab CI
+## GitHub Actions (et GitLab CI)
 
-Le dépôt fourni contenait déjà un `.gitlab-ci.yml`. GitLab apporte dans le même outil le
-pipeline, le registry d'images (`$CI_REGISTRY_IMAGE`), les environnements (historique des
-déploiements visible dans *Operate > Environments*), les jobs manuels pour la production et
-les `resource_group` qui interdisent deux déploiements simultanés sur un même environnement.
+Le dépôt est hébergé sur GitHub ; le pipeline est `.github/workflows/ci-cd.yml`. GitHub apporte
+dans le même outil le pipeline, le registry d'images (`ghcr.io`), les **environnements protégés**
+(la production exige une approbation manuelle, l'historique des déploiements est visible dans
+*Deployments*) et les groupes `concurrency` qui interdisent deux déploiements simultanés sur un
+même environnement.
 
-Les identifiants du registry sont fournis par GitLab à chaque job (`CI_REGISTRY_USER`,
-`CI_REGISTRY_PASSWORD`) : aucun secret n'est à stocker, ni dans le dépôt ni dans les variables
-du projet.
+Les identifiants du registry sont fournis à chaque exécution (`GITHUB_TOKEN`, éphémère, droits
+limités par job) : aucun secret n'est à stocker, ni dans le dépôt ni dans les paramètres.
+
+Le dépôt fourni contenait un `.gitlab-ci.yml` : nous l'avons conservé et complété avec le même
+pipeline pour GitLab. Toute la logique est dans `scripts/`, ce qui rend le pipeline portable :
+seule l'orchestration diffère entre les deux plateformes.
+
+**Runner auto-hébergé et dépôt public.** Les jobs de déploiement ne s'exécutent jamais sur une
+pull request (seulement sur `main`, sur les tags et en déclenchement manuel), afin qu'un fork
+ne puisse pas exécuter de code sur la machine de déploiement.
 
 ## Construire une fois, livrer partout
 
