@@ -25,8 +25,9 @@ USER node
 EXPOSE 3000
 
 # Healthcheck sur /readyz (prêt à servir des devis) et non sur /healthz
-# (simple processus vivant).
-HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=3 \
+# (simple processus vivant) : depuis la 1.2.0, le processus vit ~20 s avant
+# de pouvoir servir des devis.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=40s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
 STOPSIGNAL SIGTERM

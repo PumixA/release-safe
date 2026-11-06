@@ -11,8 +11,9 @@ set -uo pipefail
 BASE_URL="${1:?usage: smoke-test.sh <url> [version_attendue]}"
 EXPECTED_VERSION="${2:-}"
 # Temps de réponse maximum toléré (secondes).
+# Devis > 100 km : ~12 s annoncées depuis la 1.2.0, on tolère 20 s.
 FAST_TIMEOUT="${SMOKE_FAST_TIMEOUT:-2}"
-LONG_TIMEOUT="${SMOKE_LONG_TIMEOUT:-5}"
+LONG_TIMEOUT="${SMOKE_LONG_TIMEOUT:-20}"
 
 failures=0
 BODY=""
@@ -24,7 +25,7 @@ ko()   { printf '  [ECHEC] %s\n' "$1"; failures=$((failures + 1)); }
 request() {
   local out
   out=$(curl -sS --max-time "$1" -w '\n%{http_code} %{time_total}' "${BASE_URL}$2" 2>&1) || {
-    STATUS="000"; TIME="-"; BODY="$out"; return 1; }
+    STATUS="000"; TIME="$1"; BODY="$(printf '%s' "$out" | sed '$d')"; return 1; }
   BODY=$(printf '%s' "$out" | sed '$d')
   read -r STATUS TIME <<<"$(printf '%s' "$out" | tail -n1)"
 }
